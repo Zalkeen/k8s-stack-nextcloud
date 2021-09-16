@@ -1,0 +1,231 @@
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: cloud
+  namespace: namespace-name
+spec:
+  selector:
+    matchLabels:
+      service: cloud
+  template:
+    metadata:
+      labels:
+        service: cloud
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            preference:
+              matchExpressions:
+              - key: performance
+                operator: In
+                values:
+                - high
+      volumes:
+      - name: cloud-data
+        hostPath:
+          path: "/cluster/storage/namespace-name/cloud/data"
+          type: "DirectoryOrCreate"
+      - name: cloud-config
+        hostPath:
+          path: "/cluster/namespace-name/cloud/config"
+          type: "DirectoryOrCreate"
+      - name: cloud-apps
+        hostPath:
+          path: "/cluster/namespace-name/cloud/apps"
+          type: "DirectoryOrCreate"
+      - name: cloud-apps-custom
+        hostPath:
+          path: "/cluster/namespace-name/cloud/apps-custom"
+          type: "DirectoryOrCreate"
+      containers:
+      - name: cloud
+        image: "nextcloud:17"
+        env:
+        - name: DEBUG
+          value: "true"
+        - name: NEXTCLOUD_URL
+          value: "https://cloud.domain.tld"
+        - name: NEXTCLOUD_TRUSTED_DOMAINS
+          value: "cloud.domain.tld"
+        - name: NEXTCLOUD_TRUSTED_PROXIES
+          value: "traefik-ingress-service.core"
+        - name: NC_overwriteprotocol
+          value: "https"
+        - name: MYSQL_HOST
+          value: "cloud-db"
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: cloud-secrets
+              key: dbpw
+        - name: MYSQL_DATABASE
+          value: "nextcloud"
+        - name: MYSQL_USER
+          value: "nextcloud"
+        - name: REDIS_HOST
+          value: "cloud-kvdb"
+        - name: REDIS_HOST_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: cloud-secrets
+              key: kvdbpw
+        volumeMounts:
+        - mountPath: "/var/www/html/data"
+          name: cloud-data
+        - mountPath: "/var/www/html/config"
+          name: cloud-config
+        - mountPath: "/var/www/html/apps"
+          name: cloud-apps
+        - mountPath: "/var/www/html/custom_apps"
+          name: cloud-apps-custom
+
+---
+
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: cloud-db
+  namespace: namespace-name
+spec:
+  selector:
+    matchLabels:
+      service: cloud-db
+  template:
+    metadata:
+      labels:
+        service: cloud-db
+    spec:
+      volumes:
+      - name: cloud-db
+        hostPath:
+          path: "/cluster/namespace-name/cloud/db"
+          type: "DirectoryOrCreate"
+      nodeSelector:
+        storageaccess: direct
+      containers:
+      - name: cloud-db
+        image: "mariadb:10"
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: cloud-secrets
+              key: dbpw
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: cloud-secrets
+              key: dbpw
+        - name: MYSQL_DATABASE
+          value: "nextcloud"
+        - name: MYSQL_USER
+          value: "nextcloud"
+        volumeMounts:
+        - mountPath: "/var/lib/mysql"
+          name: cloud-db
+
+---
+
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: cloud-kvdb
+  namespace: namespace-name
+spec:
+  selector:
+    matchLabels:
+      service: cloud-kvdb
+  template:
+    metadata:
+      labels:
+        service: cloud-kvdb
+    spec:
+      volumes:
+      - name: cloud-kvdb
+        hostPath:
+          path: "/cluster/namespace-name/cloud/kvdb"
+          type: "DirectoryOrCreate"
+      containers:
+        - name: "cloud-kvdb"
+          image: "redis:latest"
+          args:
+          - --loglevel warning
+          - --requirepass $(REDIS_PASSWORD)
+          env:
+          - name: REDIS_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: cloud-secrets
+                key: kvdbpw
+          volumeMounts:
+          - mountPath: "/var/lib/redis"
+            name: cloud-kvdb
+
+---
+
+kind: Service
+apiVersion: v1
+metadata:
+  name: cloud
+  namespace: namespace-name
+spec:
+  selector:
+    service: cloud
+  ports:
+  - protocol: TCP
+    port: 80
+    name: http
+
+---
+
+kind: Service
+apiVersion: v1
+metadata:
+  name: cloud-db
+  namespace: namespace-name
+spec:
+  selector:
+    service: cloud-db
+  ports:
+  - protocol: TCP
+    port: 3306
+    name: mysql
+
+
+---
+
+kind: Service
+apiVersion: v1
+metadata:
+  name: cloud-kvdb
+  namespace: namespace-name
+spec:
+  selector:
+    service: cloud-kvdb
+  ports:
+  - protocol: TCP
+    port: 6379
+    name: db
+
+---
+
+kind: Ingress
+apiVersion: networking.k8s.io/v1beta1
+metadata:
+  name: cloud
+  namespace: namespace-name
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    traefik.frontend.passHostHeader: "true"
+spec:
+  rules:
+  - host: cloud.domain.tld
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: cloud
+          servicePort: http
+
